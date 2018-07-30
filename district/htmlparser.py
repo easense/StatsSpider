@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import logging as log
+import json
 import re
+import sys
+from collections import Iterable
 from html.parser import HTMLParser
 from urllib import request
-import time
-import json
-from collections import Iterable
 
 
 class DistrictParser(HTMLParser):
@@ -182,14 +181,19 @@ headers = {
 
 
 def fetch_data(url):
-    req = request.Request(base_url + url, headers=headers)
-    with request.urlopen(req) as r:
-        data = r.read().decode('gbk')
-        # print(data)
-        return data
+    for i in range(1, 4):
+        try:
+            req = request.Request(base_url + url, headers=headers)
+            with request.urlopen(req) as r:
+                data = r.read().decode('gbk')
+                # print(data)
+                return data
+        except BaseException:
+            print("going to retry for %s, retry cnt:%d " % (url, i))
+            continue
 
 
-def proc_data(whole_list: Iterable, retry_list: Iterable, node=None, base_path='', url='index.html'):
+def proc_data(whole_list: Iterable, retry_list: Iterable, node=None, max_level=-1, base_path='', url='index.html'):
     parser = DistrictParser(node, base_path)
     href = node.get('href') if node else None
     use_url = href if href else url
@@ -202,7 +206,7 @@ def proc_data(whole_list: Iterable, retry_list: Iterable, node=None, base_path='
         print(n)
         a_href = n.get('href', None)
         path = ''
-        if a_href is not None:
+        if a_href is not None and (max_level < 0 or n.get('level', 0) < max_level):
             split_arr = a_href.split('/')
             if len(split_arr) > 1:
                 path = '/'.join(split_arr[0:-1])
@@ -211,14 +215,15 @@ def proc_data(whole_list: Iterable, retry_list: Iterable, node=None, base_path='
             try:
                 inner_parser.feed(fetch_data(a_href))
                 node_list = node_list + inner_parser.node_list
-            except BaseException as e:
-                print("except:", e, a_href)
+            except BaseException as base_ex:
+                print("except:", base_ex, a_href)
                 a_retry = {
                     'href': a_href,
                     'node': n,
-                    'path': path
+                    'path': path,
+                    'retry_cnt': 0
                 }
-                retry_list.append(a_href)
+                retry_list.append(a_retry)
                 continue
             finally:
                 inner_parser.close()
@@ -226,12 +231,31 @@ def proc_data(whole_list: Iterable, retry_list: Iterable, node=None, base_path='
 
 
 if __name__ == '__main__':
-    whole_node_list = []
-    retries = []
 
-    proc_data(whole_node_list, retries)
+    if len(sys.argv) < 2:
+        print("""Usage: python %s out_file_path [max_level]""" % sys.argv[0].split('/')[-1])
+        exit(0)
+
+    var_max_level = -1 if len(sys.argv) < 3 else int(sys.argv[2])
+
+    out_file_path = sys.argv[1]
+
+    whole_node_list = []
+    try:
+        with open(out_file_path, 'r', encoding='utf-8') as r:
+            whole_node_list = json.loads(r.read(), 'utf-8')
+    except FileNotFoundError as fnf:
+        whole_node_list = []
+    except BaseException as e:
+        print(e)
+        exit(-1)
+
+    retries = []
+    nd = whole_node_list[-1] if len(whole_node_list) else None
+
+    proc_data(whole_node_list, retries, nd, max_level=var_max_level)
 
     print(retries)
     print(len(whole_node_list))
-    with open('/Users/easense/Downloads/district.json', 'w') as dj:
+    with open(out_file_path, 'w', encoding='utf-8') as dj:
         json.dump(whole_node_list, dj, ensure_ascii=False)
